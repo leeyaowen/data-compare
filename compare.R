@@ -1,16 +1,20 @@
-dt1<-read.csv(file.choose(),colClasses = "character")
-dt2<-read.csv(file.choose(),colClasses = "character")
-
 library(sqldf)
 library(dplyr)
-library(gdata)
+library(stringr)
 library(magrittr)
 
-dt1<-trim(dt1)
-dt2<-trim(dt2)
+dt1<-read.csv(choose.files(default=paste0(getwd(), "/*.*")),colClasses = "character")
+dt2<-read.csv(choose.files(default=paste0(getwd(), "/*.*")),colClasses = "character")
+
+dt1 %<>% mutate_if(is.character,str_trim)
+dt2 %<>% mutate_if(is.character,str_trim)
 
 anti1<-anti_join(dt1,dt2)
 anti2<-anti_join(dt2,dt1)
+
+tag1<-sqldf("select distinct Tag ,B,count(Tag) as tagnum from dt1 group by Tag,B having tagnum>1 order by tagnum desc")
+tag2<-sqldf("select distinct Tag ,B,count(Tag) as tagnum from dt2 group by Tag,B having tagnum>1 order by tagnum desc")
+
 semi1<-semi_join(dt1,dt2)
 semi2<-semi_join(dt2,dt1)
 
@@ -35,11 +39,7 @@ q221<-filter(bdt2,X2==2,Y2==1)
 qall2<-bind_rows(q211,q212,q222,q221)
 
 b12<-merge(qall1,qall2,by=0,all = TRUE,sort = F)
-write.csv(b12,file = "123.csv")
-
-
-tag1<-sqldf("select distinct Tag ,count(Tag) as tagnum from dt1 group by Tag,B having tagnum>1 order by tagnum desc")
-tag2<-sqldf("select distinct Tag ,count(Tag) as tagnum from dt2 group by Tag,B having tagnum>1 order by tagnum desc")
+write.csv(b12,file = "Jackie123.csv")
 
 #a<-sqldf("select * from dt1 except select * from dt2")
 #b<-sqldf("select * from dt2 except select * from dt1")
