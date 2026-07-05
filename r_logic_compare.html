@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>資料比對工具</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@4.6.2/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://cdn.datatables.net/1.13.5/css/dataTables.bootstrap4.min.css">
+    
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/lodash.js/4.17.21/lodash.min.js"></script>
+    <script src="https://cdn.datatables.net/1.13.5/js/jquery.dataTables.min.js"></script>
+    <script src="https://cdn.datatables.net/1.13.5/js/dataTables.bootstrap4.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx-populate/1.21.0/xlsx-populate.min.js"></script>
+
+    <style>
+        body { font-family: "Microsoft JhengHei", Arial, sans-serif; background-color: #f8f9fa; padding-top: 20px; }
+        .summary-box { background: #e9ecef; white-space: pre-wrap; font-family: monospace; padding: 15px; border-radius: 5px; border: 1px solid #ced4da; }
+        .table-responsive { background: white; padding: 15px; border-radius: 5px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+        .diff-highlight { background-color: #FFFF99 !important; } /* 黃底標示 */
+    </style>
+</head>
+<body>
+
+<div class="container-fluid mx-auto" style="width: 95%;">
+    <div class="row">
+        <div class="col-12">
+            <h2 class="mb-4">資料比對工具</h2>
+        </div>
+    </div>
+    
+    <div class="row">
+        <div class="col-md-4 mb-4">
+            <div class="card p-3 shadow-sm">
+                <div class="alert alert-info" style="padding: 15px; margin-bottom: 20px;">
+                    💡 <strong>說明：</strong>資料匯入時，資料須為 .csv 檔，欄位務必要包含 
+                    <strong>X1、Y1、X2、Y2、Tag、b</strong> 以及 <strong>Name (或 sp. 或 sp 或 species)</strong> 
+                    欄位，才能進行比對(欄位名稱的大小寫沒有差)。
+                </div>
+
+                <div class="form-group">
+                    <label class="font-weight-bold" for="encodingSelect">選擇 CSV 檔案編碼：</label>
+                    <select id="encodingSelect" class="form-control">
+                        <option value="UTF-8">UTF-8 </option>
+                        <option value="BIG5">ANSI / BIG5 </option>
+                    </select>
+                </div>
+                <hr>
+                
+                <div class="form-group">
+                    <label class="font-weight-bold">請上傳第一份檔案 (dt1)</label>
+                    <input type="file" id="file1" accept=".csv" class="form-control-file">
+                </div>
+                
+                <div class="form-group">
+                    <label class="font-weight-bold">請上傳第二份檔案 (dt2)</label>
+                    <input type="file" id="file2" accept=".csv" class="form-control-file">
+                </div>
+                
+                <div class="form-group">
+                    <label class="font-weight-bold">統計摘要：</label>
+                    <div id="summary_stats" class="summary-box">尚未上傳檔案進行比對...</div>
+                </div>
+                
+                <hr>
+                <div id="download_ui">
+                    <button class="btn btn-secondary btn-block" disabled>下載 Excel 比對結果 (請先上傳csv資料)</button>
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-md-8">
+            <div class="card p-3 shadow-sm">
+                <h4 class="text-danger mb-3">錯誤資料預覽</h4>
+                <div class="table-responsive">
+                    <table id="preview_table" class="table table-striped table-bordered url-table" style="width:100%">
+                        </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    let dt1_raw = [], dt2_raw = [];
+    let computedResult = null; 
+
+    $('#file1').on('change', handleFileSelect);
+    $('#file2').on('change', handleFileSelect);
+    $('#encodingSelect').on('change', handleFileSelect);
+
+    async function handleFileSelect() {
+        const f1 = document.getElementById('file1').files[0];
+        const f2 = document.getElementById('file2').files[0];
+        const encoding = document.getElementById('encodingSelect').value;
+        
+        if (!f1 || !f2) return;
+
+        $('#summary_stats').text("正在讀取並比對資料...");
+        try {
+            dt1_raw = await readCSV(f1, encoding);
+            dt2_raw = await readCSV(f2, encoding);
+            processAndCompare();
+        } catch (error) {
+            alert(error.message);
+            $('#summary_stats').text("發生錯誤：\n" + error.message);
+        }
+    }
+
+    function readCSV(file, encoding) {
+        return new Promise((resolve, reject) => {
+            Papa.parse(file, {
+                header: true,
+                skipEmptyLines: true,
+                encoding: encoding,
+                transform: (value) => value.trim(),
+                complete: (results) => resolve(results.data),
+                error: (error) => reject(new Error("檔案讀取失敗"))
+            });
+        });
+    }
+
+    function standardizeData(rawData) {
+        if (rawData.length === 0) return { data: [], keys: [] };
+        const sample = rawData[0];
+        const originalKeys = Object.keys(sample);
+        const mapping = {};
+        const spVariants = ["sp", "sp.", "species"];
+        let hasSpVariant = false;
+
+        originalKeys.forEach(key => {
+            const upperKey = key.toUpperCase();
+            const lowerKey = key.toLowerCase();
+            if (upperKey === "X1") mapping[key] = "X1";
+            else if (upperKey === "Y1") mapping[key] = "Y1";
+            else if (upperKey === "X2") mapping[key] = "X2";
+            else if (upperKey === "Y2") mapping[key] = "Y2";
+            else if (upperKey === "TAG") mapping[key] = "TAG";
+            else if (upperKey === "B") mapping[key] = "b";
+            else if (upperKey === "NAME") mapping[key] = "Name";
+            else if (spVariants.includes(lowerKey)) {
+                mapping[key] = "Name";
+                hasSpVariant = true;
+            } else {
+                mapping[key] = key;
+            }
+        });
+
+        const standardizedData = rawData.map(row => {
+            let newRow = {};
+            Object.keys(row).forEach(key => { newRow[mapping[key]] = row[key]; });
+            return newRow;
+        });
+
+        const allKeys = _.uniq(Object.values(mapping));
+        return { data: standardizedData, hasSpVariant: hasSpVariant, fields: allKeys };
+    }
+
+    function checkDuplicateTags(data) {
+        const counts = {};
+        data.forEach(row => {
+            const tag = row['TAG'] || '';
+            const b = row['b'] || '';
+            const key = `Tag: [${tag}], b: [${b}]`;
+            counts[key] = (counts[key] || 0) + 1;
+        });
+
+        const duplicates = [];
+        for (const [key, count] of Object.entries(counts)) {
+            if (count > 1) {
+                duplicates.push(`${key} 重複了 ${count} 次`);
+            }
+        }
+        return duplicates;
+    }
+
+    function processAndCompare() {
+        const std1 = standardizeData(dt1_raw);
+        const std2 = standardizeData(dt2_raw);
+        const dt1 = std1.data;
+        const dt2 = std2.data;
+
+        const required_cols = ["X1", "Y1", "X2", "Y2", "TAG", "b", "Name"];
+        const missing_dt1 = _.difference(required_cols, std1.fields);
+        const missing_dt2 = _.difference(required_cols, std2.fields);
+
+        if (missing_dt1.length > 0 || missing_dt2.length > 0) {
+            let errorMsg = "";
+            if (missing_dt1.length > 0) errorMsg += `提示：第一份檔案 (dt1) 缺少必要欄位：${missing_dt1.join(", ")}\n`;
+            if (missing_dt2.length > 0) errorMsg += `提示：第二份檔案 (dt2) 缺少必要欄位：${missing_dt2.join(", ")}`;
+            $('#summary_stats').text(errorMsg);
+            return;
+        }
+
+        let change_msg = "";
+        if (std1.hasSpVariant) change_msg += "💡 偵測到 dt1 含有物種縮寫欄位，已自動標準化為 Name。\n";
+        if (std2.hasSpVariant) change_msg += "💡 偵測到 dt2 含有物種縮寫欄位，已自動標準化為 Name。\n";
+
+        const dup1 = checkDuplicateTags(dt1);
+        const dup2 = checkDuplicateTags(dt2);
+        
+        let dup_msg = "";
+        if (dup1.length > 0) dup_msg += `⚠️ 警告：dt1 內有 ${dup1.length} 組 Tag+b 重複！\n`;
+        if (dup2.length > 0) dup_msg += `⚠️ 警告：dt2 內有 ${dup2.length} 組 Tag+b 重複！\n`;
+        if (dup_msg !== "") {
+            dup_msg += "-----------------------\n";
+        }
+
+        const qall1 = processAndMark(dt1, dt2);
+        const qall2 = processAndMark(dt2, dt1);
+
+        const b12 = mergeByRowIndexSeparated(qall1, qall2, std1.fields, std2.fields);
+
+        const dt1_rows = dt1.length;
+        const dt2_rows = dt2.length;
+        const same_rows = qall1.filter(r => r.marks === "").length;
+        const diff_dt1 = qall1.filter(r => r.marks === "V").length;
+        const diff_dt2 = qall2.filter(r => r.marks === "V").length;
+
+        let summaryText = change_msg + (change_msg !== "" ? "\n" : "") +
+            dup_msg +
+            `第一份檔案 (dt1) 總筆數：${dt1_rows} 筆\n` +
+            `第二份檔案 (dt2) 總筆數：${dt2_rows} 筆\n\n` +
+            `兩份檔案相同的資料：${same_rows} 筆\n` +
+            `dt1 錯誤的資料：${diff_dt1} 筆\n` +
+            `dt2 錯誤的資料：${diff_dt2} 筆`;
+        
+        $('#summary_stats').text(summaryText);
+
+        const orderedColumns = ['Row_names', 'marks_dt1'];
+        std1.fields.forEach(f => { if(f !== 'marks') orderedColumns.push(`${f}_dt1`); });
+        orderedColumns.push('marks_dt2');
+        std2.fields.forEach(f => { if(f !== 'marks') orderedColumns.push(`${f}_dt2`); });
+
+        computedResult = { b12: b12, columnsOrder: orderedColumns, baseFields: _.intersection(std1.fields, std2.fields) };
+
+        renderPreviewTable(b12, orderedColumns);
+        renderDownloadButton();
+    }
+
+    function processAndMark(targetDt, referenceDt) {
+        const stringifyRow = (row) => JSON.stringify(row);
+        const refSet = new Set(referenceDt.map(stringifyRow));
+
+        const muanti = targetDt.filter(row => !refSet.has(stringifyRow(row))).map(row => ({...row, marks: 'V'}));
+        const musemi = targetDt.filter(row => refSet.has(stringifyRow(row))).map(row => ({...row, marks: ''}));
+        const combined = [...muanti, ...musemi];
+
+        const sortFields = ['X1', 'Y1', 'X2', 'Y2', 'TAG', 'b', 'sp', 'Name'];
+        const sorted = _.sortBy(combined, (r) => sortFields.map(f => r[f] || ''));
+
+        const q11 = sorted.filter(r => r.X2 === '1' && r.Y2 === '1');
+        const q12 = sorted.filter(r => r.X2 === '1' && r.Y2 === '2');
+        const q22 = sorted.filter(r => r.X2 === '2' && r.Y2 === '2');
+        const q21 = sorted.filter(r => r.X2 === '2' && r.Y2 === '1');
+        const others = sorted.filter(r => !((r.X2==='1'&&r.Y2==='1')||(r.X2==='1'&&r.Y2==='2')||(r.X2==='2'&&r.Y2==='2')||(r.X2==='2'&&r.Y2==='1')));
+
+        return [...q11, ...q12, ...q22, ...q21, ...others];
+    }
+
+    function mergeByRowIndexSeparated(q1, q2, fields1, fields2) {
+        const maxLen = Math.max(q1.length, q2.length);
+        const merged = [];
+        
+        for (let i = 0; i < maxLen; i++) {
+            let row = { Row_names: i + 1 };
+            
+            row['marks_dt1'] = q1[i] && q1[i]['marks'] !== undefined ? q1[i]['marks'] : null;
+            fields1.forEach(field => {
+                if (field !== 'marks') {
+                    row[`${field}_dt1`] = q1[i] && q1[i][field] !== undefined ? q1[i][field] : null;
+                }
+            });
+
+            row['marks_dt2'] = q2[i] && q2[i]['marks'] !== undefined ? q2[i]['marks'] : null;
+            fields2.forEach(field => {
+                if (field !== 'marks') {
+                    row[`${field}_dt2`] = q2[i] && q2[i][field] !== undefined ? q2[i][field] : null;
+                }
+            });
+
+            merged.push(row);
+        }
+        return merged;
+    }
+
+    function renderPreviewTable(fullData, columnsOrder) {
+        const filteredData = fullData.filter(r => r.marks_dt1 === 'V' || r.marks_dt2 === 'V');
+
+        if (filteredData.length === 0) {
+            $('#preview_table').html("<p class='p-3 text-success'>太棒了！資料完全無誤，沒有相異錯誤項目。</p>");
+            return;
+        }
+
+        let headerHtml = "<thead><tr>";
+        columnsOrder.forEach(col => { headerHtml += `<th>${col}</th>`; });
+        headerHtml += "</tr></thead>";
+        
+        if ($.fn.DataTable.isDataTable('#preview_table')) {
+            $('#preview_table').DataTable().destroy();
+        }
+        $('#preview_table').html(headerHtml);
+
+        const dtColumns = columnsOrder.map(col => ({ data: col, defaultContent: "" }));
+        const baseFields = computedResult.baseFields; 
+
+        $('#preview_table').DataTable({
+            data: filteredData,
+            columns: dtColumns,
+            scrollX: true,
+            pageLength: 10,
+            rownames: false,
+            createdRow: function(row, data, dataIndex) {
+                baseFields.forEach(field => {
+                    const colIdx1 = columnsOrder.indexOf(`${field}_dt1`);
+                    const colIdx2 = columnsOrder.indexOf(`${field}_dt2`);
+                    
+                    if (colIdx1 !== -1 && colIdx2 !== -1) {
+                        const val1 = data[`${field}_dt1`];
+                        const val2 = data[`${field}_dt2`];
+                        
+                        if (val1 !== val2) {
+                            $(row).find('td').eq(colIdx1).addClass('diff-highlight');
+                            $(row).find('td').eq(colIdx2).addClass('diff-highlight');
+                        }
+                    }
+                });
+            }
+        });
+    }
+
+    function renderDownloadButton() {
+        const todayStr = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+        const filename = `Compare_Result_${todayStr}.xlsx`;
+        const btnHtml = `<button onclick="downloadXLSX('${filename}')" class="btn btn-success btn-block">下載 Excel 比對結果</button>`;
+        $('#download_ui').html(btnHtml);
+    }
+
+    async function downloadXLSX(filename) {
+        if (!computedResult) return;
+        const df = computedResult.b12;
+        const columnsOrder = computedResult.columnsOrder;
+        const baseFields = computedResult.baseFields;
+
+        const workbook = await XlsxPopulate.fromBlankAsync();
+        const sheet = workbook.sheet(0).name("比對結果");
+
+        columnsOrder.forEach((col, colIdx) => {
+            const cell = sheet.cell(1, colIdx + 1).value(col);
+            cell.style("bold", true);
+            if (col.endsWith("_dt1") || col === "marks_dt1") {
+                cell.style("fill", "d8d8d8"); 
+            } else if (col.endsWith("_dt2") || col === "marks_dt2") {
+                cell.style("fill", "98c4c8"); 
+            }
+        });
+
+        df.forEach((rowObj, rowIdx) => {
+            const excelRowIdx = rowIdx + 2;
+            columnsOrder.forEach((col, colIdx) => {
+                const value = rowObj[col] === null ? "" : rowObj[col];
+                sheet.cell(excelRowIdx, colIdx + 1).value(value);
+            });
+
+            baseFields.forEach(field => {
+                const val1 = rowObj[`${field}_dt1`];
+                const val2 = rowObj[`${field}_dt2`];
+                if (val1 !== val2) {
+                    const colIdx1 = columnsOrder.indexOf(`${field}_dt1`) + 1;
+                    const colIdx2 = columnsOrder.indexOf(`${field}_dt2`) + 1;
+                    if (colIdx1 > 0) sheet.cell(excelRowIdx, colIdx1).style("fill", "FFFF99");
+                    if (colIdx2 > 0) sheet.cell(excelRowIdx, colIdx2).style("fill", "FFFF99");
+                }
+            });
+        });
+
+        const blob = await workbook.outputAsync();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+    }
+</script>
+
+</body>
+</html>
